@@ -10,7 +10,6 @@ from sentence_transformers import SentenceTransformer
 # =========================================================
 # CONFIG GITHUB
 # =========================================================
-######https://raw.githubusercontent.com/zonkysan/QuestSAR/refs/heads/main/domande.csv
 GITHUB_OWNER = "zonkysan"
 GITHUB_REPO = "QuestSAR"
 GITHUB_BRANCH = "main"
@@ -214,18 +213,25 @@ try:
     if "last_search" not in st.session_state:
         st.session_state.last_search = ""
 
-    search_query = st.text_input(
-        "Cerca per contesto nella DOMANDA:",
-        placeholder=f"Inserisci almeno {min_chars} caratteri..."
-    ).strip()
-
     threshold_options = [0.48, 0.50, 0.52, 0.54]
-    threshold = st.selectbox(
-        "Soglia minima similarità",
-        options=threshold_options,
-        index=2,
-        format_func=lambda x: f"{x:.2f}"
-    )
+
+    col1, col2 = st.columns([5, 1])
+
+    with col1:
+        search_query = st.text_input(
+            "Cerca per contesto nella DOMANDA:",
+            placeholder=f"Inserisci almeno {min_chars} caratteri..."
+        ).strip()
+
+    with col2:
+        st.markdown("**Soglia**")
+        threshold = st.selectbox(
+            label="Soglia similarità",
+            options=threshold_options,
+            index=2,
+            format_func=lambda x: f"{x:.2f}",
+            label_visibility="collapsed"
+        )
 
     if search_query != st.session_state.last_search:
         st.session_state.visible_rows = batch_size
