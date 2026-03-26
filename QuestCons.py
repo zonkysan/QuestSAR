@@ -1,20 +1,28 @@
-import os
+import io
 import json
 import pickle
+import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
 # =========================================================
-# CONFIG
+# CONFIG GITHUB
 # =========================================================
-CSV_PATH = r"C:\Users\stefano.zagarella\Downloads\streamlit\domande.csv"
+######https://raw.githubusercontent.com/zonkysan/QuestSAR/refs/heads/main/domande.csv
+GITHUB_OWNER = "zonkysan"
+GITHUB_REPO = "QuestSAR"
+GITHUB_BRANCH = "main"
 
-INDEX_DIR = r"C:\Users\stefano.zagarella\Downloads\streamlit\index"
-EMBEDDINGS_PATH = os.path.join(INDEX_DIR, "semantic_index_embeddings.npy")
-METADATA_PATH = os.path.join(INDEX_DIR, "semantic_index_metadata.pkl")
-INFO_PATH = os.path.join(INDEX_DIR, "semantic_index_info.json")
+# file CSV nel repo
+CSV_FILE_PATH = "/domande.csv"
+
+# cartella nel repo dove hai caricato i file di indicizzazione
+INDEX_BASE_PATH = "index"
+EMBEDDINGS_FILE = f"{INDEX_BASE_PATH}/semantic_index_embeddings.npy"
+METADATA_FILE = f"{INDEX_BASE_PATH}/semantic_index_metadata.pkl"
+INFO_FILE = f"{INDEX_BASE_PATH}/semantic_index_info.json"
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 
@@ -25,20 +33,44 @@ st.set_page_config(page_title="Ricerca Semantica CSV", layout="wide")
 st.title("🔎 Ricerca Semantica Real-Time")
 
 # =========================================================
-# MODELLO
+# URL HELPERS
 # =========================================================
-@st.cache_resource
-def load_model():
-    return SentenceTransformer(MODEL_NAME)
+def github_raw_url(path: str) -> str:
+    return f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{path}"
+
+def github_blob_url(path: str) -> str:
+    return f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/{GITHUB_BRANCH}/{path}"
+
+# =========================================================
+# DOWNLOAD HELPERS
+# =========================================================
+@st.cache_data(show_spinner=False)
+def download_text_from_github(path: str) -> str:
+    url = github_raw_url(path)
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    return response.text
+
+@st.cache_data(show_spinner=False)
+def download_bytes_from_github(path: str) -> bytes:
+    url = github_raw_url(path)
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    return response.content
+
+def github_file_exists(path: str) -> bool:
+    url = github_raw_url(path)
+    response = requests.head(url, timeout=15)
+    return response.status_code == 200
 
 # =========================================================
 # CSV
 # =========================================================
-def load_csv_from_fixed_path(csv_path: str) -> pd.DataFrame:
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"File CSV non trovato: {csv_path}")
+@st.cache_data(show_spinner=False)
+def load_csv_from_github(csv_path: str) -> pd.DataFrame:
+    csv_bytes = download_bytes_from_github(csv_path)
 
-    df_raw = pd.read_csv(csv_path, sep=None, engine="python")
+    df_raw = pd.read_csv(io.BytesIO(csv_bytes), sep=None, engine="python")
     df_raw.columns = [str(c).strip() for c in df_raw.columns]
 
     target_cols = ["DOMANDA", "RISPOSTA A", "MATERIA"]
@@ -58,41 +90,38 @@ def load_csv_from_fixed_path(csv_path: str) -> pd.DataFrame:
     if "MATERIA" in df.columns:
         df["MATERIA"] = df["MATERIA"].fillna("").astype(str)
 
-    # Testo usato per embedding
-    df["TEXT_FOR_EMBEDDING"] = (
-        df["DOMANDA"].fillna("").astype(str) + " " +
-        df["RISPOSTA A"].fillna("").astype(str)
-    ).str.strip()
+    # Per velocità/semplicità indicizzo solo DOMANDA
+    df["TEXT_FOR_EMBEDDING"] = df["DOMANDA"].fillna("").astype(str).str.strip()
 
     return df
 
 # =========================================================
-# INFO CSV
+# FIRMA REMOTA DEL CSV
 # =========================================================
-def get_csv_signature(csv_path: str) -> dict:
-    stat = os.stat(csv_path)
+@st.cache_data(show_spinner=False)
+def get_remote_csv_signature(csv_path: str) -> dict:
+    csv_bytes = download_bytes_from_github(csv_path)
+
     return {
-        "path": os.path.abspath(csv_path),
-        "mtime": stat.st_mtime,
-        "size": stat.st_size,
-        "model_name": MODEL_NAME
+        "owner": GITHUB_OWNER,
+        "repo": GITHUB_REPO,
+        "branch": GITHUB_BRANCH,
+        "csv_path": csv_path,
+        "csv_size": len(csv_bytes),
+        "model_name": MODEL_NAME,
     }
 
-def load_index_info() -> dict | None:
-    if not os.path.exists(INFO_PATH):
-        return None
-    with open(INFO_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_index_info(info: dict):
-    os.makedirs(INDEX_DIR, exist_ok=True)
-    with open(INFO_PATH, "w", encoding="utf-8") as f:
-        json.dump(info, f, ensure_ascii=False, indent=2)
+# =========================================================
+# MODELLO
+# =========================================================
+@st.cache_resource
+def load_model():
+    return SentenceTransformer(MODEL_NAME)
 
 # =========================================================
-# BUILD / LOAD INDEX
+# BUILD INDICE IN MEMORIA
 # =========================================================
-def build_and_save_index(df: pd.DataFrame, csv_path: str):
+def build_index_in_memory(df: pd.DataFrame):
     model = load_model()
     texts = df["TEXT_FOR_EMBEDDING"].tolist()
 
@@ -103,42 +132,56 @@ def build_and_save_index(df: pd.DataFrame, csv_path: str):
         normalize_embeddings=True
     )
 
-    metadata_df = df[["DOMANDA", "RISPOSTA A"] + ([ "MATERIA" ] if "MATERIA" in df.columns else [])].copy()
+    metadata_df = df[[c for c in ["DOMANDA", "RISPOSTA A", "MATERIA"] if c in df.columns]].copy()
+    return metadata_df, embeddings
 
-    os.makedirs(INDEX_DIR, exist_ok=True)
-    np.save(EMBEDDINGS_PATH, embeddings)
+# =========================================================
+# LOAD INDICE DA GITHUB
+# =========================================================
+@st.cache_data(show_spinner=False)
+def load_remote_index_info() -> dict | None:
+    if not github_file_exists(INFO_FILE):
+        return None
+    content = download_text_from_github(INFO_FILE)
+    return json.loads(content)
 
-    with open(METADATA_PATH, "wb") as f:
-        pickle.dump(metadata_df, f)
+@st.cache_data(show_spinner=False)
+def load_remote_metadata_df() -> pd.DataFrame:
+    metadata_bytes = download_bytes_from_github(METADATA_FILE)
+    return pickle.loads(metadata_bytes)
 
-    save_index_info(get_csv_signature(csv_path))
+@st.cache_data(show_spinner=False)
+def load_remote_embeddings() -> np.ndarray:
+    emb_bytes = download_bytes_from_github(EMBEDDINGS_FILE)
+    return np.load(io.BytesIO(emb_bytes))
 
-def is_index_valid(csv_path: str) -> bool:
+def is_remote_index_valid(csv_path: str) -> bool:
     if not (
-        os.path.exists(EMBEDDINGS_PATH)
-        and os.path.exists(METADATA_PATH)
-        and os.path.exists(INFO_PATH)
+        github_file_exists(INFO_FILE)
+        and github_file_exists(METADATA_FILE)
+        and github_file_exists(EMBEDDINGS_FILE)
     ):
         return False
 
-    saved_info = load_index_info()
-    current_info = get_csv_signature(csv_path)
+    saved_info = load_remote_index_info()
+    current_info = get_remote_csv_signature(csv_path)
 
     return saved_info == current_info
 
 @st.cache_resource
 def load_or_build_index(csv_path: str):
-    df = load_csv_from_fixed_path(csv_path)
+    df = load_csv_from_github(csv_path)
 
-    if not is_index_valid(csv_path):
-        build_and_save_index(df, csv_path)
+    # prova a usare l'indice già caricato su GitHub
+    if is_remote_index_valid(csv_path):
+        metadata_df = load_remote_metadata_df()
+        embeddings = load_remote_embeddings()
+        source = "github-index"
+    else:
+        metadata_df, embeddings = build_index_in_memory(df)
+        source = "rebuilt-in-memory"
 
-    embeddings = np.load(EMBEDDINGS_PATH)
-
-    with open(METADATA_PATH, "rb") as f:
-        metadata_df = pickle.load(f)
-
-    return metadata_df, embeddings
+    return metadata_df, embeddings, source
 
 # =========================================================
 # SEARCH
@@ -153,7 +196,6 @@ def semantic_search(query: str, metadata_df: pd.DataFrame, embeddings: np.ndarra
         normalize_embeddings=True
     )[0]
 
-    # cosine similarity, dato che i vettori sono normalizzati
     scores = embeddings @ query_embedding
 
     top_k = min(top_k, len(metadata_df))
@@ -161,17 +203,18 @@ def semantic_search(query: str, metadata_df: pd.DataFrame, embeddings: np.ndarra
 
     result = metadata_df.iloc[top_indices].copy()
     result["SCORE"] = scores[top_indices]
-
     return result
 
 # =========================================================
 # UI
 # =========================================================
 try:
-    st.caption(f"CSV fisso: `{CSV_PATH}`")
+    st.caption(f"CSV GitHub: {github_blob_url(CSV_FILE_PATH)}")
 
-    with st.spinner("Caricamento indice semantico..."):
-        metadata_df, embeddings = load_or_build_index(CSV_PATH)
+    with st.spinner("Caricamento indice semantico da GitHub..."):
+        metadata_df, embeddings, index_source = load_or_build_index(CSV_FILE_PATH)
+
+    st.caption(f"Sorgente indice: {index_source}")
 
     min_chars = 2
     batch_size = 100
@@ -210,8 +253,8 @@ try:
     )
 
     df_filtered = df_filtered[df_filtered["SCORE"] >= threshold].copy()
-    df_filtered["SCORE"] = df_filtered["SCORE"].round(4)
 
+    # niente SCORE in output
     display_cols = [c for c in ["DOMANDA", "RISPOSTA A", "MATERIA"] if c in df_filtered.columns]
     df_filtered = df_filtered[display_cols]
 
@@ -229,20 +272,9 @@ try:
             hide_index=True,
             height=650,
             column_config={
-                "DOMANDA": st.column_config.TextColumn(
-                    "DOMANDA",
-                    width="large",
-                    max_chars=None,  # 🔥 abilita multilinea (wrap)
-                ),
-                "RISPOSTA A": st.column_config.TextColumn(
-                    "RISPOSTA A",
-                    width="large",
-                    max_chars=None,  # 🔥 abilita multilinea (wrap)
-                ),
-                "MATERIA": st.column_config.TextColumn(
-                    "MATERIA",
-                    width="small",
-                ),
+                "DOMANDA": st.column_config.TextColumn("DOMANDA", width="large", max_chars=None),
+                "RISPOSTA A": st.column_config.TextColumn("RISPOSTA A", width="large", max_chars=None),
+                "MATERIA": st.column_config.TextColumn("MATERIA", width="small"),
             },
         )
 
@@ -252,18 +284,9 @@ try:
                 st.rerun()
 
     with st.expander("Dettagli indice"):
-        info = load_index_info()
-        st.json(info)
-
-        st.write(f"Numero righe indicizzate: {len(metadata_df)}")
-        st.write(f"Dimensione embeddings: {embeddings.shape}")
-
-    if st.button("Rigenera indice manualmente"):
-        with st.spinner("Rigenerazione indice in corso..."):
-            df_tmp = load_csv_from_fixed_path(CSV_PATH)
-            build_and_save_index(df_tmp, CSV_PATH)
-            st.cache_resource.clear()
-            st.rerun()
+        st.write(f"Righe indicizzate: {len(metadata_df)}")
+        st.write(f"Shape embeddings: {embeddings.shape}")
+        st.write(f"Indice caricato da: {index_source}")
 
 except Exception as e:
     st.error(f"Errore: {e}")
