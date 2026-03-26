@@ -28,8 +28,8 @@ MODEL_NAME = "all-MiniLM-L6-v2"
 # =========================================================
 # STREAMLIT
 # =========================================================
-st.set_page_config(page_title="Ricerca Semantica CSV", layout="wide")
-st.title("🔎 Ricerca Semantica Real-Time")
+st.set_page_config(page_title="Cons quest", layout="wide")
+st.title("🔎 Ricerca domanda:")
 
 # =========================================================
 # URL HELPERS
