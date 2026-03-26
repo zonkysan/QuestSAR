@@ -24,8 +24,6 @@ EMBEDDINGS_FILE = f"{INDEX_BASE_PATH}/semantic_index_embeddings.npy"
 METADATA_FILE = f"{INDEX_BASE_PATH}/semantic_index_metadata.pkl"
 INFO_FILE = f"{INDEX_BASE_PATH}/semantic_index_info.json"
 
-MODEL_NAME = "all-MiniLM-L6-v2"
-
 # =========================================================
 # STREAMLIT
 # =========================================================
@@ -37,9 +35,6 @@ st.title("🔎 Ricerca Semantica Real-Time")
 # =========================================================
 def github_raw_url(path: str) -> str:
     return f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{path}"
-
-def github_blob_url(path: str) -> str:
-    return f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/{GITHUB_BRANCH}/{path}"
 
 # =========================================================
 # DOWNLOAD HELPERS
@@ -90,7 +85,7 @@ def load_csv_from_github(csv_path: str) -> pd.DataFrame:
     if "MATERIA" in df.columns:
         df["MATERIA"] = df["MATERIA"].fillna("").astype(str)
 
-    # Per velocità/semplicità indicizzo solo DOMANDA
+    # Indicizzazione solo su DOMANDA
     df["TEXT_FOR_EMBEDDING"] = df["DOMANDA"].fillna("").astype(str).str.strip()
 
     return df
@@ -172,16 +167,13 @@ def is_remote_index_valid(csv_path: str) -> bool:
 def load_or_build_index(csv_path: str):
     df = load_csv_from_github(csv_path)
 
-    # prova a usare l'indice già caricato su GitHub
     if is_remote_index_valid(csv_path):
         metadata_df = load_remote_metadata_df()
         embeddings = load_remote_embeddings()
-        source = "github-index"
     else:
         metadata_df, embeddings = build_index_in_memory(df)
-        source = "rebuilt-in-memory"
 
-    return metadata_df, embeddings, source
+    return metadata_df, embeddings
 
 # =========================================================
 # SEARCH
@@ -209,12 +201,8 @@ def semantic_search(query: str, metadata_df: pd.DataFrame, embeddings: np.ndarra
 # UI
 # =========================================================
 try:
-    st.caption(f"CSV GitHub: {github_blob_url(CSV_FILE_PATH)}")
-
-    with st.spinner("Caricamento indice semantico da GitHub..."):
-        metadata_df, embeddings, index_source = load_or_build_index(CSV_FILE_PATH)
-
-    st.caption(f"Sorgente indice: {index_source}")
+    with st.spinner("Caricamento indice semantico..."):
+        metadata_df, embeddings = load_or_build_index(CSV_FILE_PATH)
 
     min_chars = 2
     batch_size = 100
@@ -229,12 +217,12 @@ try:
         placeholder=f"Inserisci almeno {min_chars} caratteri..."
     ).strip()
 
-    threshold = st.slider(
+    threshold_options = [0.48, 0.50, 0.52, 0.54]
+    threshold = st.selectbox(
         "Soglia minima similarità",
-        min_value=0.10,
-        max_value=0.95,
-        value=0.25,
-        step=0.01
+        options=threshold_options,
+        index=2,
+        format_func=lambda x: f"{x:.2f}"
     )
 
     if search_query != st.session_state.last_search:
@@ -254,7 +242,6 @@ try:
 
     df_filtered = df_filtered[df_filtered["SCORE"] >= threshold].copy()
 
-    # niente SCORE in output
     display_cols = [c for c in ["DOMANDA", "RISPOSTA A", "MATERIA"] if c in df_filtered.columns]
     df_filtered = df_filtered[display_cols]
 
@@ -272,9 +259,20 @@ try:
             hide_index=True,
             height=650,
             column_config={
-                "DOMANDA": st.column_config.TextColumn("DOMANDA", width="large", max_chars=None),
-                "RISPOSTA A": st.column_config.TextColumn("RISPOSTA A", width="large", max_chars=None),
-                "MATERIA": st.column_config.TextColumn("MATERIA", width="small"),
+                "DOMANDA": st.column_config.TextColumn(
+                    "DOMANDA",
+                    width="large",
+                    max_chars=None
+                ),
+                "RISPOSTA A": st.column_config.TextColumn(
+                    "RISPOSTA A",
+                    width="large",
+                    max_chars=None
+                ),
+                "MATERIA": st.column_config.TextColumn(
+                    "MATERIA",
+                    width="small"
+                ),
             },
         )
 
@@ -286,7 +284,6 @@ try:
     with st.expander("Dettagli indice"):
         st.write(f"Righe indicizzate: {len(metadata_df)}")
         st.write(f"Shape embeddings: {embeddings.shape}")
-        st.write(f"Indice caricato da: {index_source}")
 
 except Exception as e:
     st.error(f"Errore: {e}")
