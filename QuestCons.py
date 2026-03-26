@@ -24,6 +24,8 @@ EMBEDDINGS_FILE = f"{INDEX_BASE_PATH}/semantic_index_embeddings.npy"
 METADATA_FILE = f"{INDEX_BASE_PATH}/semantic_index_metadata.pkl"
 INFO_FILE = f"{INDEX_BASE_PATH}/semantic_index_info.json"
 
+MODEL_NAME = "all-MiniLM-L6-v2"
+
 # =========================================================
 # STREAMLIT
 # =========================================================
